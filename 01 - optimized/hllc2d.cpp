@@ -2,7 +2,7 @@
 #include <fstream>
 #include <cmath>
 #include "problems.h"
-
+#include <chrono>
 using namespace std;
 
 int dims;
@@ -17,6 +17,51 @@ double dX;
 double* P;
 int* neighbour;
 double Cgama;
+
+class Timer
+{
+public:
+    void start()
+    {
+        m_StartTime = std::chrono::system_clock::now();
+        m_bRunning = true;
+    }
+    
+    void stop()
+    {
+        m_EndTime = std::chrono::system_clock::now();
+        m_bRunning = false;
+    }
+    
+    double elapsedMilliseconds()
+    {
+        std::chrono::time_point<std::chrono::system_clock> endTime;
+        
+        if(m_bRunning)
+        {
+            endTime = std::chrono::system_clock::now();
+        }
+        else
+        {
+            endTime = m_EndTime;
+        }
+        
+        return std::chrono::duration_cast<std::chrono::milliseconds>(endTime - m_StartTime).count();
+    }
+    
+    double elapsedSeconds()
+    {
+        return elapsedMilliseconds() / 1000.0;
+    }
+
+private:
+    std::chrono::time_point<std::chrono::system_clock> m_StartTime;
+    std::chrono::time_point<std::chrono::system_clock> m_EndTime;
+    bool                                               m_bRunning = false;
+}; 
+
+
+
 //######################################################################
 int initialize(int Dims,int *Grid) {
     int N = 0;
@@ -91,29 +136,33 @@ void Output(int C,double T,int Nt, double* U, double* P,double* Pos) {
 
     myfile << "# Time = " << T << "  Cycle = " << C << endl; 
     myfile << "# X,UVector,P" << endl;
+
     for (int n = 0; n<Nt;n++) {
-        
+        #pragma opm parallel
+        {
+        #pragma omp for
         for (int j=0;j<dims;j++)
             myfile << Pos[n*dims+j] << ",";
-
+        #pragma omp for
         for (int j=0;j<2+dims;j++)
             myfile << U[n*3+j] << ",";        
         
-        myfile << P[n] << endl;        
+        myfile << P[n] << endl;       
+        } 
     }
     myfile.close();
 }
 //######################################################################
 double CFL(int Nt,double* U,double CT,double CET) {
-    double maxVelocity = -1000.0;
-    for (int n = 0;n<Nt;n++) {
-        double C = sqrt(Cgama*P[n]/U[n*(2+dims)+0]);
-        for (int d=0;d<dims;d++) {
+    double maxVelocity = -1000.0; 
+    for (int n = 0;n<Nt;n++){
+        double c = sqrt(Cgama*P[n]/U[n*(2+dims)+0]);
+        for (int d=0;d<dims;d++){
             double Vel = U[n*(2+dims)+1+d] / U[n*(2+dims)+0];
-            maxVelocity = max(maxVelocity,abs(Vel+C));
-            maxVelocity = max(maxVelocity,abs(-Vel+C));
+            maxVelocity = max(maxVelocity,abs(Vel+c));
+            maxVelocity = max(maxVelocity,abs(-Vel+c));
         }
-    }    
+    }
     
     double ndT =  dX / maxVelocity * 0.1;
     if (CT+ndT>CET) ndT = CET - CT + 1.0e-8;
@@ -175,6 +224,9 @@ void boundaryCondition(int TYP,double rC,double ruC,double rEC,double* r,double*
 //######################################################################
 //######################################################################
 int main() {
+    Timer timer;
+
+    timer.start();
     //-- initialization
     Problem1();
     Time = 0.0;
@@ -217,10 +269,11 @@ int main() {
             }
         }
         //-- update new UVector
-        for (int n=0;n<N;n++) {
+        #pragma omp parallel for collapse(2)
+        for (int n=0;n<N;n++) 
             for (int i=0;i<2+dims;i++) {
                 UVector[n*(2+dims)+i] = UVector[n*(2+dims)+i] - dT/dX * (Flux[(n+1)*(2+dims)+i]-Flux[n*(2+dims)+i]);            
-            }
+            
             //cout << n << "  " << UVector[n*(2+dims)+0] << "  " << UVector[n*(2+dims)+1] << " @ " << UVector[n*(2+dims)+2] << endl;
             double re = UVector[n*(2+dims)+(1+dims)] - 0.5 * UVector[n*(2+dims)+1] * UVector[n*(2+dims)+1] / UVector[n*(2+dims)+0];
             P[n] = (Cgama-1.0)*re;
@@ -228,12 +281,16 @@ int main() {
         }
         //-- CFL
         dT = CFL(N,UVector,Time,EndTime);
-        cout << Cycle << "  " << Time << "  " << dT << endl;
+        //cout << Cycle << "  " << Time << "  " << dT << endl;
         Cycle++;
         if (Cycle%1==0) Output(Cycle,Time,N,UVector,P,X);
     }
 
     Output(Cycle,Time,N,UVector,P,X);
+
+    timer.stop();
+    cout << "\nSeconds: " << timer.elapsedSeconds() << "\n";
+    cout << "Milliseconds: " << timer.elapsedMilliseconds() << "\n";
 
 
     delete [] UVector;
